@@ -2,8 +2,10 @@
 
 import os
 import html
+import h5py
 import string
 import random
+import numpy as np
 import multiprocessing
 import xml.etree.ElementTree as ET
 
@@ -28,41 +30,47 @@ class Dataset():
         dataset = getattr(self, f"_{self.name}")()
 
         if not self.dataset:
-            self.dataset = dict()
-
-            for y in self.partitions:
-                self.dataset[y] = {'dt': [], 'gt': []}
+            self.dataset = self._init_dataset()
 
         for y in self.partitions:
             self.dataset[y]['dt'] += dataset[y]['dt']
             self.dataset[y]['gt'] += dataset[y]['gt']
 
-    def preprocess_partitions(self, input_size):
-        """Preprocess images and sentences from partitions"""
+    def save_partitions(self, target, image_input_size, max_text_length):
+        """Save images and sentences from dataset"""
 
-        for y in self.partitions:
-            arange = range(len(self.dataset[y]['gt']))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        total = 0
 
-            for i in reversed(arange):
-                text = pp.text_standardize(self.dataset[y]['gt'][i])
+        with h5py.File(target, "w") as hf:
+            for pt in self.partitions:
+                self.dataset[pt] = self.check_text(self.dataset[pt], max_text_length)
+                size = (len(self.dataset[pt]['dt']),) + image_input_size[:2]
+                total += size[0]
 
-                if not self.check_text(text):
-                    self.dataset[y]['gt'].pop(i)
-                    self.dataset[y]['dt'].pop(i)
-                    continue
+                dummy_image = np.zeros(size, dtype=np.uint8)
+                dummy_sentence = [("c" * max_text_length).encode()] * size[0]
 
-                self.dataset[y]['gt'][i] = text.encode()
+                hf.create_dataset(f"{pt}/dt", data=dummy_image, compression="gzip", compression_opts=9)
+                hf.create_dataset(f"{pt}/gt", data=dummy_sentence, compression="gzip", compression_opts=9)
 
-            results = []
-            with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
-                print(f"Partition: {y}")
-                for result in tqdm(pool.imap(partial(pp.preprocess, input_size=input_size), self.dataset[y]['dt']),
-                                   total=len(self.dataset[y]['dt'])):
-                    results.append(result)
-                pool.close()
-                pool.join()
+        pbar = tqdm(total=total)
+        batch_size = 1024
 
-            self.dataset[y]['dt'] = results
+        for pt in self.partitions:
+            for batch in range(0, len(self.dataset[pt]['gt']), batch_size):
+                images = []
+
+                with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
+                    r = pool.map(partial(pp.preprocess, input_size=image_input_size), self.dataset[pt]['dt'][batch:batch + batch_size])
+                    images.append(r)
+                    pool.close()
+                    pool.join()
+
+                with h5py.File(target, "a") as hf:
+                    hf[f"{pt}/dt"][batch:batch + batch_size] = images
+                    hf[f"{pt}/gt"][batch:batch + batch_size] = [s.encode() for s in self.dataset[pt]['gt'][batch:batch + batch_size]]
+                    pbar.update(batch_size)
 
     def _init_dataset(self):
         dataset = dict()
@@ -83,6 +91,81 @@ class Dataset():
         li = list(zip(*ls))
         random.shuffle(li)
         return zip(*li)
+
+    def _hdsr14_car_a(self):
+        """ICFHR 2014 Competition on Handwritten Digit String Recognition in Challenging Datasets dataset reader"""
+
+        dataset = self._init_dataset()
+        partition = self._read_orand_partitions(os.path.join(self.source, "ORAND-CAR-2014"), 'a')
+
+        for pt in self.partitions:
+            for item in partition[pt]:
+                text = " ".join(list(item[1]))
+                dataset[pt]['dt'].append(item[0])
+                dataset[pt]['gt'].append(text)
+
+        return dataset
+
+    def _hdsr14_car_b(self):
+        """ICFHR 2014 Competition on Handwritten Digit String Recognition in Challenging Datasets dataset reader"""
+
+        dataset = self._init_dataset()
+        partition = self._read_orand_partitions(os.path.join(self.source, "ORAND-CAR-2014"), 'b')
+
+        for pt in self.partitions:
+            for item in partition[pt]:
+                text = " ".join(list(item[1]))
+                dataset[pt]['dt'].append(item[0])
+                dataset[pt]['gt'].append(text)
+
+        return dataset
+
+    def _read_orand_partitions(self, basedir, type_f):
+        """ICFHR 2014 Competition on Handwritten Digit String Recognition in Challenging Datasets dataset reader"""
+
+        partition = {"train": [], "valid": [], "test": []}
+        folder = f"CAR-{type_f.upper()}"
+
+        for i in ['train', 'test']:
+            img_path = os.path.join(basedir, folder, f"{type_f.lower()}_{i}_images")
+            txt_file = os.path.join(basedir, folder, f"{type_f.lower()}_{i}_gt.txt")
+
+            with open(txt_file) as f:
+                lines = [line.replace("\n", "").split("\t") for line in f]
+                lines = [[os.path.join(img_path, x[0]), x[1]] for x in lines]
+
+            partition[i] = lines
+
+        sub_partition = int(len(partition['train']) * 0.1)
+        partition['valid'] = partition['train'][:sub_partition]
+        partition['train'] = partition['train'][sub_partition:]
+
+        return partition
+
+    def _hdsr14_cvl(self):
+        """ICFHR 2014 Competition on Handwritten Digit String Recognition in Challenging Datasets dataset reader"""
+
+        dataset = self._init_dataset()
+        partition = {"train": [], "valid": [], "test": []}
+
+        glob_filter = os.path.join(self.source, "cvl-strings", "**", "*.png")
+        train_list = [x for x in glob(glob_filter, recursive=True)]
+
+        glob_filter = os.path.join(self.source, "cvl-strings-eval", "**", "*.png")
+        test_list = [x for x in glob(glob_filter, recursive=True)]
+
+        sub_partition = int(len(train_list) * 0.1)
+        partition['valid'].extend(train_list[:sub_partition])
+        partition['train'].extend(train_list[sub_partition:])
+        partition['test'].extend(test_list[:])
+
+        for pt in self.partitions:
+            for item in partition[pt]:
+                text = " ".join(list(os.path.basename(item).split("-")[0]))
+                dataset[pt]['dt'].append(item)
+                dataset[pt]['gt'].append(text)
+
+        return dataset
 
     def _bentham(self):
         """Bentham dataset reader"""
@@ -255,15 +338,20 @@ class Dataset():
         return dataset
 
     @staticmethod
-    def check_text(text):
-        """Make sure text has more characters instead of punctuation marks"""
+    def check_text(data, max_text_length=128):
+        """Checks if the text has more characters instead of punctuation marks"""
 
-        strip_punc = text.strip(string.punctuation).strip()
-        no_punc = text.translate(str.maketrans("", "", string.punctuation)).strip()
+        for i in reversed(range(len(data['gt']))):
+            text = pp.text_standardize(data['gt'][i])
+            strip_punc = text.strip(string.punctuation).strip()
+            no_punc = text.translate(str.maketrans("", "", string.punctuation)).strip()
 
-        if len(text) == 0 or len(strip_punc) == 0 or len(no_punc) == 0:
-            return False
+            length_valid = (len(text) > 1) and (len(text) < max_text_length)
+            text_valid = (len(strip_punc) > 1) or (len(no_punc) > 1)
 
-        punc_percent = (len(strip_punc) - len(no_punc)) / len(strip_punc)
+            if (not length_valid) or (not text_valid):
+                data['gt'].pop(i)
+                data['dt'].pop(i)
+                continue
 
-        return len(no_punc) > 2 and punc_percent <= 0.2
+        return data

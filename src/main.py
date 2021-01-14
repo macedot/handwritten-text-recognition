@@ -58,23 +58,9 @@ if __name__ == "__main__":
 
     if args.transform:
         print(f"{args.source} dataset will be transformed...")
-
         ds = Dataset(source=raw_path, name=args.source)
         ds.read_partitions()
-
-        print("Partitions will be preprocessed...")
-        ds.preprocess_partitions(input_size=input_size)
-
-        print("Partitions will be saved...")
-        os.makedirs(os.path.dirname(source_path), exist_ok=True)
-
-        for i in ds.partitions:
-            with h5py.File(source_path, "a") as hf:
-                hf.create_dataset(f"{i}/dt", data=ds.dataset[i]['dt'], compression="gzip", compression_opts=9)
-                hf.create_dataset(f"{i}/gt", data=ds.dataset[i]['gt'], compression="gzip", compression_opts=9)
-                print(f"[OK] {i} partition.")
-
-        print(f"Transformation finished.")
+        ds.save_partitions(source_path, input_size, max_text_length)
 
     elif args.cv2:
         with h5py.File(source_path, "r") as hf:
@@ -201,15 +187,16 @@ if __name__ == "__main__":
                                         verbose=1)
 
             predicts = [dtgen.tokenizer.decode(x[0]) for x in predicts]
+            ground_truth = [x.decode() for x in dtgen.dataset['test']['gt']]
 
             total_time = datetime.datetime.now() - start_time
 
             with open(os.path.join(output_path, "predict.txt"), "w") as lg:
-                for pd, gt in zip(predicts, dtgen.dataset['test']['gt']):
+                for pd, gt in zip(predicts, ground_truth):
                     lg.write(f"TE_L {gt}\nTE_P {pd}\n")
 
             evaluate = evaluation.ocr_metrics(predicts=predicts,
-                                              ground_truth=dtgen.dataset['test']['gt'],
+                                              ground_truth=ground_truth,
                                               norm_accentuation=args.norm_accentuation,
                                               norm_punctuation=args.norm_punctuation)
 
