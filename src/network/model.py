@@ -51,7 +51,8 @@ class HTRModel:
                  beam_width=10,
                  top_paths=1,
                  stop_tolerance=20,
-                 reduce_tolerance=15):
+                 reduce_tolerance=15,
+                 cooldown=0):
         """
         Initialization of a HTR Model.
 
@@ -72,6 +73,7 @@ class HTRModel:
 
         self.stop_tolerance = stop_tolerance
         self.reduce_tolerance = reduce_tolerance
+        self.cooldown = cooldown
 
     def summary(self, output=None, target=None):
         """Show/Save model structure (summary)"""
@@ -126,6 +128,7 @@ class HTRModel:
                 min_delta=1e-8,
                 factor=0.2,
                 patience=self.reduce_tolerance,
+                cooldown=self.cooldown,
                 verbose=verbose)
         ]
 
@@ -436,7 +439,7 @@ def flor(input_size, d_model):
 
     input_data = Input(name="input", shape=input_size)
 
-    cnn = Conv2D(filters=16, kernel_size=(3, 3), strides=(1, 2), padding="same", kernel_initializer="he_uniform")(input_data)
+    cnn = Conv2D(filters=16, kernel_size=(3, 3), strides=(2, 2), padding="same", kernel_initializer="he_uniform")(input_data)
     cnn = PReLU(shared_axes=[1, 2])(cnn)
     cnn = BatchNormalization(renorm=True)(cnn)
     cnn = FullGatedConv2D(filters=16, kernel_size=(3, 3), padding="same")(cnn)
@@ -467,6 +470,8 @@ def flor(input_size, d_model):
     cnn = Conv2D(filters=64, kernel_size=(3, 3), strides=(1, 1), padding="same", kernel_initializer="he_uniform")(cnn)
     cnn = PReLU(shared_axes=[1, 2])(cnn)
     cnn = BatchNormalization(renorm=True)(cnn)
+
+    cnn = MaxPooling2D(pool_size=(1, 2), strides=(1, 2), padding="valid")(cnn)
 
     shape = cnn.get_shape()
     bgru = Reshape((shape[1], shape[2] * shape[3]))(cnn)
